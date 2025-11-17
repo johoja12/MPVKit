@@ -403,7 +403,7 @@ class BaseBuild {
             if !FileManager.default.fileExists(atPath: headerURL.path) {
                 headerURL = prefix + "include"
             }
-            try? FileManager.default.copyItem(at: headerURL, to: frameworkDir + "Headers")
+        try? FileManager.default.copyItem(at: headerURL, to: frameworkDir + "Headers")
         }
         arguments.append("-output")
         arguments.append((frameworkDir + framework).path)
@@ -414,6 +414,13 @@ class BaseBuild {
             umbrella "."
 
         """
+        // Ensure dependent Apple frameworks are linked when consumers link this static framework
+        for linkedFramework in frameworkLinkedFrameworks(framework) {
+            modulemap += """
+                link framework "\(linkedFramework)"
+
+            """
+        }
         frameworkExcludeHeaders(framework).forEach { header in
             modulemap += """
                 exclude header "\(header).h"
@@ -432,6 +439,10 @@ class BaseBuild {
         try fixShallowBundles(framework: framework, platform: platform, frameworkDir: frameworkDir)
         return frameworkDir.path
     }
+
+    // Add Apple frameworks that must be linked alongside the generated static framework.
+    // Subclasses can override to specify per-framework dependencies.
+    func frameworkLinkedFrameworks(_: String) -> [String] { [] }
 
     // Fix shallow bundles for Xcode 26, only for macOS frameworks
     func fixShallowBundles(framework: String, platform: PlatformType, frameworkDir: URL) throws {
@@ -1342,4 +1353,3 @@ extension URL {
         return url
     }
 }
-

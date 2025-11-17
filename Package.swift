@@ -24,6 +24,7 @@ let package = Package(
             ],
             path: "Sources/_MPVKit",
             linkerSettings: [
+                .linkedFramework("AVFAudio"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreAudio"),
             ]
@@ -61,6 +62,7 @@ let package = Package(
             ],
             path: "Sources/_MPVKit-GPL",
             linkerSettings: [
+                .linkedFramework("AVFAudio"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreAudio"),
             ]
@@ -71,7 +73,7 @@ let package = Package(
                 "Libavcodec-GPL", "Libavdevice-GPL", "Libavfilter-GPL", "Libavformat-GPL", "Libavutil-GPL", "Libswresample-GPL", "Libswscale-GPL",
                 "Libssl", "Libcrypto", "Libass", "Libfreetype", "Libfribidi", "Libharfbuzz",
                 "MoltenVK", "Libshaderc_combined", "lcms2", "Libplacebo", "Libdovi", "Libunibreak",
-                "Libsmbclient", "gmp", "nettle", "hogweed", "gnutls", "Libdav1d", "Libuavs3d"
+                "gmp", "nettle", "hogweed", "gnutls", "Libdav1d", "Libuavs3d"
             ],
             path: "Sources/_FFmpeg-GPL",
             linkerSettings: [
@@ -195,12 +197,6 @@ let package = Package(
             name: "Libass",
             url: "https://github.com/mpvkit/libass-build/releases/download/0.17.3-xcode/Libass.xcframework.zip",
             checksum: "a70099da503e89e032ba38c1fd06b522168fcdedd2feb97c2061bca90ae9104e"
-        ),
-
-        .binaryTarget(
-            name: "Libsmbclient",
-            url: "https://github.com/mpvkit/libsmbclient-build/releases/download/4.15.13-xcode/Libsmbclient.xcframework.zip",
-            checksum: "eca7ec0f3a226441c051773e2742670c85a2de522957b3580d3ccd65071281e5"
         ),
 
         .binaryTarget(

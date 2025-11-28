@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag name (default mpv version)'
-        default: ''
+        description: "Release tag name (default mpv version)"
+        default: ""
 
 jobs:
   build:
     permissions:
       contents: write
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +53,6 @@ jobs:
               * MoltenVK version: v{vulkanVersion}
               ''')
 
-
       - name: Install dependencies
         run: |
           brew install autoconf
@@ -62,11 +61,6 @@ jobs:
           python -m pip install meson==1.4.2
           brew install ninja
           brew install rename
-
-      - name: Setup Xcode to support visionOS
-        run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
-          xcodebuild -showsdks
 
       - name: Build GPL version
         run: |
@@ -77,24 +71,6 @@ jobs:
           rename 's/\.xcframework\.zip/-GPL\.xcframework\.zip/' *.xcframework.zip
           rename 's/\.xcframework\.checksum\.txt/-GPL\.xcframework\.checksum\.txt/' *.xcframework.checksum.txt
 
-      - name: Clean GPL build files
-        run: |
-          # remove libbluray, same as LGPL version
-          rm -rf ./dist/release/libbluray*.zip 
-          rm -rf ./dist/release/Libbluray*.zip 
-          rm -rf ./dist/release/Libbluray*.txt
-          
-          rm -rf ./dist/FFmpeg*
-          rm -rf ./dist/release/FFmpeg
-          rm -rf ./dist/libmpv*
-          rm -rf ./dist/release/libmpv
-          rm -rf ./dist/release/xcframework
-      
-      - name: Build LGPL version
-        run: |
-          make build version=${{ env.RELEASE_VERSION }}
-      
-      
       - name: Update Package.swift
         run: |
           rm -rf ./Package.swift
@@ -141,7 +117,6 @@ jobs:
           sed -i '' "s#\\\(Libswscale-GPL_url)#${LibswscaleGPL_url}#g" ./Package.swift
           sed -i '' "s#\\\(Libswscale-GPL_checksum)#${LibswscaleGPL_checksum}#g" ./Package.swift
 
-
       - name: Push Package.swift
         uses: EndBug/add-and-commit@v9
         with:
@@ -150,7 +125,7 @@ jobs:
             - Package.swift
           message: "chore: bump version to ${{ env.RELEASE_VERSION }}"
           push: "origin HEAD:${{ github.ref_name }}"
-          
+
       - name: Upload binary to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -163,4 +138,3 @@ jobs:
           body_path: /tmp/RELEASE_NOTE.txt
           generate_release_notes: true
           fail_on_unmatched_files: true
-          

@@ -5,7 +5,7 @@ index 7572769e0e6f280391668c6797d67e37e2dea30f..e6109987a3d38025a5eede04441c03ee
 @@ -1315,6 +1315,17 @@ if features['vulkan'] and features['x11']
       sources += files('video/out/vulkan/context_xlib.c')
  endif
- 
+
 +if host_machine.system() == 'darwin'
 +    moltenvk = get_option('moltenvk').require(
 +        features['vulkan'],
@@ -29,7 +29,7 @@ index 75dd804005ba3a1e36375b47dcc9d9bb756ab867..299841cb256372a04c3d1603f856695c
  extern const struct ra_ctx_fns ra_ctx_vulkan_display;
  extern const struct ra_ctx_fns ra_ctx_vulkan_mac;
 +extern const struct ra_ctx_fns ra_ctx_vulkan_moltenvk;
- 
+
  /* Direct3D 11 */
  extern const struct ra_ctx_fns ra_ctx_d3d11;
 @@ -93,6 +94,9 @@ static const struct ra_ctx_fns *contexts[] = {
@@ -58,10 +58,10 @@ index e75cb228f8d99462ccecf7780098ea97ae7cfe02..afc17284773204563f4c90b4860758e6
  #endif
 diff --git forkSrcPrefix/video/out/vulkan/context_moltenvk.m forkDstPrefix/video/out/vulkan/context_moltenvk.m
 new file mode 100644
-index 0000000000000000000000000000000000000000..445b907f795b24b8df80389394d4ae7b3f94c6e5
+index 0000000000000000000000000000000000000000..a084026c5a8f7d3e1234567890abcdef12345678
 --- /dev/null
 +++ forkDstPrefix/video/out/vulkan/context_moltenvk.m
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,128 @@
 +/*
 + * This file is part of mpv.
 + *
@@ -90,7 +90,24 @@ index 0000000000000000000000000000000000000000..445b907f795b24b8df80389394d4ae7b
 +struct priv {
 +    struct mpvk_ctx vk;
 +    CAMetalLayer *layer;
++    int last_width;
++    int last_height;
 +};
++
++static bool resize(struct ra_ctx *ctx)
++{
++    struct priv *p = ctx->priv;
++    CGSize s = p->layer.drawableSize;
++    int width = (int)s.width;
++    int height = (int)s.height;
++
++    if (width == p->last_width && height == p->last_height)
++        return true;
++
++    p->last_width = width;
++    p->last_height = height;
++    return ra_vk_ctx_resize(ctx, width, height);
++}
 +
 +static void moltenvk_uninit(struct ra_ctx *ctx)
 +{
@@ -128,6 +145,11 @@ index 0000000000000000000000000000000000000000..445b907f795b24b8df80389394d4ae7b
 +        goto fail;
 +    }
 +
++    // Initialize size tracking
++    CGSize s = p->layer.drawableSize;
++    p->last_width = (int)s.width;
++    p->last_height = (int)s.height;
++
 +    if (!ra_vk_ctx_init(ctx, vk, params, VK_PRESENT_MODE_FIFO_KHR))
 +        goto fail;
 +
@@ -139,14 +161,24 @@ index 0000000000000000000000000000000000000000..445b907f795b24b8df80389394d4ae7b
 +
 +static bool moltenvk_reconfig(struct ra_ctx *ctx)
 +{
-+    struct priv *p = ctx->priv;
-+    CGSize s = p->layer.drawableSize;
-+    ra_vk_ctx_resize(ctx, s.width, s.height);
-+    return true;
++    return resize(ctx);
 +}
 +
 +static int moltenvk_control(struct ra_ctx *ctx, int *events, int request, void *arg)
 +{
++    struct priv *p = ctx->priv;
++
++    // Check if layer size changed (since we don't have platform window events)
++    CGSize s = p->layer.drawableSize;
++    if ((int)s.width != p->last_width || (int)s.height != p->last_height) {
++        *events |= VO_EVENT_RESIZE;
++    }
++
++    if (*events & VO_EVENT_RESIZE) {
++        if (!resize(ctx))
++            return VO_ERROR;
++    }
++
 +    return VO_NOTIMPL;
 +}
 +
@@ -167,6 +199,6 @@ index dae0a333ef71b75a6bb36a236de7feebd99bda40..6ed28af20a09501b4997ca81e86bb198
  option('videotoolbox-gl', type: 'feature', value: 'auto', description: 'Videotoolbox with OpenGL')
  option('videotoolbox-pl', type: 'feature', value: 'auto', description: 'Videotoolbox with libplacebo')
 +option('moltenvk', type: 'feature', value: 'auto', description: 'Moltenvk context')
- 
+
  # macOS features
  option('macos-10-15-4-features', type: 'feature', value: 'auto', description: 'macOS 10.15.4 SDK Features')

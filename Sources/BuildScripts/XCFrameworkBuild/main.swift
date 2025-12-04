@@ -495,6 +495,8 @@ private class BuildMPV: BaseBuild {
             array.append("-Dgl-cocoa=enabled")
             array.append("-Dvideotoolbox-gl=enabled")
             array.append("-Dvideotoolbox-pl=enabled")
+            array.append("-Dmacos-touchbar=disabled")
+            array.append("-Dmacos-media-player=disabled")
             array.append("-Dlua=luajit")  // macos show video stats need enable
         } else {
             array.append("-Dvideotoolbox-gl=disabled")

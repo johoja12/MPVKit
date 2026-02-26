@@ -87,8 +87,6 @@ enum Library: String, CaseIterable {
             return "0.0.8-xcode"
         case .libbluray:
             return "1.4.0"
-        case .libluajit:
-            return "2.1.0-xcode"
         case .libuavs3d:
             return "1.2.1-xcode"
         }

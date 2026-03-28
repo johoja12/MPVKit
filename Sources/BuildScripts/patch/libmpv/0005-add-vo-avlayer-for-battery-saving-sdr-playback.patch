@@ -57,7 +57,7 @@ new file mode 100644
 index 0000000..0000001
 --- /dev/null
 +++ b/video/out/vo_avlayer.m
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,393 @@
 +/*
 + * Battery-saving video output with subtitle overlay.
 + *
@@ -310,7 +310,7 @@ index 0000000..0000001
 +    // Create subtitle overlay as a sibling layer on top of the video layer
 +    dispatch_sync(dispatch_get_main_queue(), ^{
 +        p->subtitle_layer = [CALayer layer];
-+        p->subtitle_layer.backgroundColor = [UIColor clearColor].CGColor;
++        p->subtitle_layer.backgroundColor = CGColorGetConstantColor(kCGColorClear);
 +        p->subtitle_layer.contentsGravity = kCAGravityResizeAspect;
 +        p->subtitle_layer.frame = p->video_layer.frame;
 +        if (p->video_layer.superlayer) {

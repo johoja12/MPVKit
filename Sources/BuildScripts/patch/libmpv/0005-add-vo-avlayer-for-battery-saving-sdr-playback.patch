@@ -57,7 +57,7 @@ new file mode 100644
 index 0000000..0000001
 --- /dev/null
 +++ b/video/out/vo_avlayer.m
-@@ -0,0 +1,233 @@
+@@ -0,0 +1,241 @@
 +/*
 + * Battery-saving video output — feeds CVPixelBuffers from VideoToolbox
 + * to an AVSampleBufferDisplayLayer for inline display.

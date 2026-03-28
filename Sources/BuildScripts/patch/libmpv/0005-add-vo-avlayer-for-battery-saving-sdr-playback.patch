@@ -57,7 +57,7 @@ new file mode 100644
 index 0000000..0000001
 --- /dev/null
 +++ b/video/out/vo_avlayer.m
-@@ -0,0 +1,393 @@
+@@ -0,0 +1,409 @@
 +/*
 + * Battery-saving video output with subtitle overlay.
 + *
@@ -215,9 +215,24 @@ index 0000000..0000001
 +    if (!vo->osd || !p->subtitle_layer || p->src_width <= 0 || p->src_height <= 0)
 +        return;
 +
++    // Use the layer's pixel dimensions for OSD rendering so subtitles
++    // appear at the same size as gpu-next (which renders at display resolution).
++    __block int layer_w = p->src_width;
++    __block int layer_h = p->src_height;
++    dispatch_sync(dispatch_get_main_queue(), ^{
++        CGFloat scale = p->subtitle_layer.contentsScale;
++        if (scale < 1) scale = 1;
++        layer_w = (int)(p->subtitle_layer.bounds.size.width * scale);
++        layer_h = (int)(p->subtitle_layer.bounds.size.height * scale);
++    });
++    if (layer_w <= 0 || layer_h <= 0) {
++        layer_w = p->src_width;
++        layer_h = p->src_height;
++    }
++
 +    struct mp_osd_res osd_res = {
-+        .w = p->src_width,
-+        .h = p->src_height,
++        .w = layer_w,
++        .h = layer_h,
 +    };
 +
 +    double pts = frame->current ? frame->current->pts : 0;
@@ -247,9 +262,9 @@ index 0000000..0000001
 +        return;
 +    }
 +
-+    // Create a bitmap context for the subtitle overlay
-+    int w = p->src_width;
-+    int h = p->src_height;
++    // Create a bitmap context at layer resolution for correct subtitle sizing
++    int w = layer_w;
++    int h = layer_h;
 +    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
 +    CGContextRef ctx = CGBitmapContextCreate(
 +        NULL, w, h, 8, w * 4, cs,
@@ -311,7 +326,8 @@ index 0000000..0000001
 +    dispatch_sync(dispatch_get_main_queue(), ^{
 +        p->subtitle_layer = [CALayer layer];
 +        p->subtitle_layer.backgroundColor = CGColorGetConstantColor(kCGColorClear);
-+        p->subtitle_layer.contentsGravity = kCAGravityResizeAspect;
++        p->subtitle_layer.contentsGravity = kCAGravityResize;
++        p->subtitle_layer.contentsScale = p->video_layer.contentsScale;
 +        p->subtitle_layer.frame = p->video_layer.frame;
 +        if (p->video_layer.superlayer) {
 +            [p->video_layer.superlayer addSublayer:p->subtitle_layer];

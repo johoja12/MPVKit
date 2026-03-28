@@ -7,7 +7,7 @@ index f0b8d2d..a1c2e3f 100644
  endif
 
 +vo_avlayer_deps = dependency('appleframeworks',
-+                             modules: ['CoreMedia', 'AVFoundation', 'CoreVideo'],
++                             modules: ['CoreMedia', 'AVFoundation', 'CoreVideo', 'CoreGraphics'],
 +                             required: get_option('vo-avlayer'))
 +features += {'vo-avlayer': vo_avlayer_deps.found()}
 +if features['vo-avlayer']
@@ -26,7 +26,7 @@ index 395a7b4..b2c3f4e 100644
  option('coreaudio', type: 'feature', value: 'auto', description: 'CoreAudio audio output')
  option('avfoundation', type: 'feature', value: 'auto', description: 'AVFoundation audio output')
  option('vo-pip', type: 'feature', value: 'auto', description: 'PiP video output via AVSampleBufferDisplayLayer')
-+option('vo-avlayer', type: 'feature', value: 'auto', description: 'Battery-saving video output via AVSampleBufferDisplayLayer for inline display')
++option('vo-avlayer', type: 'feature', value: 'auto', description: 'Battery-saving video output via AVSampleBufferDisplayLayer with subtitle overlay')
  option('jack', type: 'feature', value: 'auto', description: 'JACK audio output')
  option('openal', type: 'feature', value: 'disabled', description: 'OpenAL audio output')
  option('audiotrack', type: 'feature', value: 'auto', description: 'Android AudioTrack audio output')
@@ -57,62 +57,47 @@ new file mode 100644
 index 0000000..0000001
 --- /dev/null
 +++ b/video/out/vo_avlayer.m
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,310 @@
 +/*
-+ * Battery-saving video output — feeds CVPixelBuffers from VideoToolbox
-+ * to an AVSampleBufferDisplayLayer for inline display.
++ * Battery-saving video output with subtitle overlay.
 + *
-+ * This is identical in concept to vo_pip but designed for the main
-+ * video view (not PiP). It bypasses the entire Vulkan/libplacebo/MoltenVK
-+ * rendering pipeline, using Apple's native compositing instead.
++ * Feeds CVPixelBuffers from VideoToolbox to an AVSampleBufferDisplayLayer
++ * for the video, and renders subtitles/OSD to a separate transparent
++ * CALayer on top using CoreGraphics.
 + *
-+ * WinID must point to an AVSampleBufferDisplayLayer instance.
++ * This bypasses the Vulkan/libplacebo/MoltenVK pipeline, using Apple's
++ * native compositing instead (same path as AVPlayer). Subtitle bitmaps
++ * are obtained from mpv's OSD subsystem and drawn to a CGBitmapContext.
 + *
-+ * This VO only accepts IMGFMT_VIDEOTOOLBOX frames (hardware-decoded
-+ * CVPixelBuffers). It wraps each frame in a CMSampleBuffer and
-+ * enqueues it on the display layer. Apple handles YUV→RGB conversion,
-+ * scaling, and display compositing in optimized hardware — same path
-+ * as AVPlayer.
++ * WinID must point to an NSArray containing:
++ *   [0] AVSampleBufferDisplayLayer (for video)
++ *   [1] CALayer (for subtitle overlay, must be transparent)
 + *
-+ * Use case: SDR content playback where GLSL shaders, advanced scaling,
-+ * HDR tone mapping, and ambient lighting are not needed. Dramatically
-+ * reduces GPU/CPU power consumption for longer battery life.
-+ *
-+ * This file is part of mpv.
-+ *
-+ * mpv is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU Lesser General Public
-+ * License as published by the Free Software Foundation; either
-+ * version 2.1 of the License, or (at your option) any later version.
-+ *
-+ * mpv is distributed in the hope that it will be useful,
-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-+ * GNU Lesser General Public License for more details.
-+ *
-+ * You should have received a copy of the GNU Lesser General Public
-+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ * This VO only accepts IMGFMT_VIDEOTOOLBOX frames.
 + */
 +
 +#import <AVFoundation/AVFoundation.h>
 +#import <CoreMedia/CoreMedia.h>
 +#import <CoreVideo/CoreVideo.h>
++#import <CoreGraphics/CoreGraphics.h>
 +
 +#include <libavutil/hwcontext.h>
 +
 +#include "common/msg.h"
-+#include "options/m_config.h"
 +#include "video/img_format.h"
 +#include "video/mp_image.h"
 +#include "video/hwdec.h"
++#include "sub/osd.h"
 +#include "vo.h"
 +
 +struct priv {
-+    AVSampleBufferDisplayLayer *layer;
++    AVSampleBufferDisplayLayer *video_layer;
++    CALayer *subtitle_layer;
 +    CMTimebaseRef timebase;
 +    struct mp_hwdec_ctx hwctx;
 +    int src_width;
 +    int src_height;
++    int64_t last_sub_change_id;
 +};
 +
 +static CMSampleBufferRef create_sample_buffer(CVPixelBufferRef pixbuf,
@@ -154,6 +139,155 @@ index 0000000..0000001
 +    return sample_buf;
 +}
 +
++// Callback for osd_draw — renders each subtitle bitmap part to the CG context.
++struct sub_draw_ctx {
++    CGContextRef cg_ctx;
++    int canvas_w;
++    int canvas_h;
++    struct vo *vo;
++};
++
++static void draw_sub_bitmaps(void *ctx, struct sub_bitmaps *imgs)
++{
++    struct sub_draw_ctx *d = ctx;
++    if (!imgs || imgs->num_parts == 0)
++        return;
++
++    for (int i = 0; i < imgs->num_parts; i++) {
++        struct sub_bitmap *sb = &imgs->parts[i];
++
++        if (imgs->format == SUBBITMAP_BGRA) {
++            // BGRA bitmap — create CGImage and draw it
++            CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
++            CGContextRef bmp_ctx = CGBitmapContextCreate(
++                sb->bitmap, sb->w, sb->h, 8, sb->stride,
++                cs,
++                kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
++            if (bmp_ctx) {
++                CGImageRef img = CGBitmapContextCreateImage(bmp_ctx);
++                if (img) {
++                    // CG has flipped Y axis
++                    CGRect rect = CGRectMake(sb->x, d->canvas_h - sb->y - sb->dh,
++                                             sb->dw, sb->dh);
++                    CGContextDrawImage(d->cg_ctx, rect, img);
++                    CGImageRelease(img);
++                }
++                CGContextRelease(bmp_ctx);
++            }
++            CGColorSpaceRelease(cs);
++        } else if (imgs->format == SUBBITMAP_LIBASS) {
++            // A8 alpha mask with solid color — composite manually
++            uint32_t color = sb->libass.color;
++            // libass color: 0xRRGGBBAA (AA=transparency, 0=opaque, 255=transparent)
++            CGFloat r = ((color >> 24) & 0xFF) / 255.0;
++            CGFloat g = ((color >> 16) & 0xFF) / 255.0;
++            CGFloat b = ((color >>  8) & 0xFF) / 255.0;
++            CGFloat a = 1.0 - ((color >>  0) & 0xFF) / 255.0;
++
++            // Create alpha mask from A8 bitmap
++            CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
++            CGContextRef mask_ctx = CGBitmapContextCreate(
++                sb->bitmap, sb->w, sb->h, 8, sb->stride,
++                gray, kCGImageAlphaNone);
++            if (mask_ctx) {
++                CGImageRef mask = CGBitmapContextCreateImage(mask_ctx);
++                if (mask) {
++                    CGRect rect = CGRectMake(sb->x, d->canvas_h - sb->y - sb->dh,
++                                             sb->dw, sb->dh);
++                    // Clip to the alpha mask and fill with the solid color
++                    CGContextSaveGState(d->cg_ctx);
++                    CGContextClipToMask(d->cg_ctx, rect, mask);
++                    CGContextSetRGBFillColor(d->cg_ctx, r, g, b, a);
++                    CGContextFillRect(d->cg_ctx, rect);
++                    CGContextRestoreGState(d->cg_ctx);
++                    CGImageRelease(mask);
++                }
++                CGContextRelease(mask_ctx);
++            }
++            CGColorSpaceRelease(gray);
++        }
++    }
++}
++
++static void render_subtitles(struct vo *vo, struct vo_frame *frame)
++{
++    struct priv *p = vo->priv;
++    if (!vo->osd || !p->subtitle_layer || p->src_width <= 0 || p->src_height <= 0)
++        return;
++
++    struct mp_osd_res osd_res = {
++        .w = p->src_width,
++        .h = p->src_height,
++    };
++
++    double pts = frame->current ? frame->current->pts : 0;
++
++    bool formats[SUBBITMAP_COUNT] = {0};
++    formats[SUBBITMAP_BGRA] = true;
++    formats[SUBBITMAP_LIBASS] = true;
++
++    struct sub_bitmap_list *subs = osd_render(vo->osd, osd_res, pts,
++                                              OSD_DRAW_SUB_ONLY, formats);
++    if (!subs)
++        return;
++
++    // Skip re-render if subtitles haven't changed
++    if (subs->change_id == p->last_sub_change_id && subs->num_items > 0) {
++        talloc_free(subs);
++        return;
++    }
++    p->last_sub_change_id = subs->change_id;
++
++    if (subs->num_items == 0) {
++        // No subtitles — clear the overlay
++        dispatch_async(dispatch_get_main_queue(), ^{
++            p->subtitle_layer.contents = nil;
++        });
++        talloc_free(subs);
++        return;
++    }
++
++    // Create a bitmap context for the subtitle overlay
++    int w = p->src_width;
++    int h = p->src_height;
++    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
++    CGContextRef ctx = CGBitmapContextCreate(
++        NULL, w, h, 8, w * 4, cs,
++        kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst);
++    CGColorSpaceRelease(cs);
++
++    if (!ctx) {
++        talloc_free(subs);
++        return;
++    }
++
++    // Clear to transparent
++    CGContextClearRect(ctx, CGRectMake(0, 0, w, h));
++
++    struct sub_draw_ctx draw_ctx = {
++        .cg_ctx = ctx,
++        .canvas_w = w,
++        .canvas_h = h,
++        .vo = vo,
++    };
++
++    for (int i = 0; i < subs->num_items; i++) {
++        draw_sub_bitmaps(&draw_ctx, subs->items[i]);
++    }
++
++    CGImageRef img = CGBitmapContextCreateImage(ctx);
++    CGContextRelease(ctx);
++    talloc_free(subs);
++
++    if (img) {
++        // Update subtitle layer on main thread (CALayer is not thread-safe)
++        dispatch_async(dispatch_get_main_queue(), ^{
++            p->subtitle_layer.contents = (__bridge id)img;
++            CGImageRelease(img);
++        });
++    }
++}
++
 +static int preinit(struct vo *vo)
 +{
 +    struct priv *p = vo->priv;
@@ -164,14 +298,26 @@ index 0000000..0000001
 +        return -1;
 +    }
 +
-+    p->layer = (__bridge AVSampleBufferDisplayLayer *)
++    // WinID points to an AVSampleBufferDisplayLayer.
++    // The subtitle overlay CALayer is created and added as a sibling.
++    p->video_layer = (__bridge AVSampleBufferDisplayLayer *)
 +               (void *)(intptr_t)vo->opts->WinID;
-+    if (!p->layer) {
++    if (!p->video_layer) {
 +        MP_ERR(vo, "vo_avlayer: invalid layer pointer\n");
 +        return -1;
 +    }
 +
-+    // Create a timebase tied to the host clock for sample timing.
++    // Create subtitle overlay as a sibling layer on top of the video layer
++    dispatch_sync(dispatch_get_main_queue(), ^{
++        p->subtitle_layer = [CALayer layer];
++        p->subtitle_layer.backgroundColor = [UIColor clearColor].CGColor;
++        p->subtitle_layer.contentsGravity = kCAGravityResizeAspect;
++        p->subtitle_layer.frame = p->video_layer.frame;
++        if (p->video_layer.superlayer) {
++            [p->video_layer.superlayer addSublayer:p->subtitle_layer];
++        }
++    });
++
 +    CMTimebaseRef timebase = NULL;
 +    OSStatus status = CMTimebaseCreateWithSourceClock(
 +        kCFAllocatorDefault, CMClockGetHostTimeClock(), &timebase);
@@ -183,13 +329,9 @@ index 0000000..0000001
 +    CMTimebaseSetTime(timebase, kCMTimeZero);
 +    p->timebase = timebase;
 +
-+    p->layer.controlTimebase = timebase;
++    p->video_layer.controlTimebase = timebase;
++    p->video_layer.videoGravity = AVLayerVideoGravityResizeAspect;
 +
-+    // Set video gravity to resize-aspect (letterboxed, not stretched).
-+    p->layer.videoGravity = AVLayerVideoGravityResizeAspect;
-+
-+    // Register VideoToolbox hwdec device context so that
-+    // hwdec=videotoolbox works with this VO.
 +    p->hwctx = (struct mp_hwdec_ctx){
 +        .driver_name = "avlayer",
 +        .hw_imgfmt = IMGFMT_VIDEOTOOLBOX,
@@ -210,7 +352,7 @@ index 0000000..0000001
 +
 +    hwdec_devices_add(vo->hwdec_devs, &p->hwctx);
 +
-+    MP_VERBOSE(vo, "vo_avlayer: initialized (battery-saving SDR mode)\n");
++    MP_VERBOSE(vo, "vo_avlayer: initialized with subtitle overlay support\n");
 +    return 0;
 +}
 +
@@ -224,6 +366,7 @@ index 0000000..0000001
 +    struct priv *p = vo->priv;
 +    p->src_width = params->w;
 +    p->src_height = params->h;
++    p->last_sub_change_id = -1; // Force subtitle re-render on reconfig
 +    MP_VERBOSE(vo, "vo_avlayer: reconfig %dx%d\n", params->w, params->h);
 +    return 0;
 +}
@@ -248,14 +391,16 @@ index 0000000..0000001
 +        return true;
 +    }
 +
-+    if (p->layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
-+        MP_WARN(vo, "vo_avlayer: layer in failed state (%s), flushing\n",
-+                [p->layer.error.localizedDescription UTF8String]);
-+        [p->layer flush];
++    if (p->video_layer.status == AVQueuedSampleBufferRenderingStatusFailed) {
++        MP_WARN(vo, "vo_avlayer: layer in failed state, flushing\n");
++        [p->video_layer flush];
 +    }
 +
-+    [p->layer enqueueSampleBuffer:sample];
++    [p->video_layer enqueueSampleBuffer:sample];
 +    CFRelease(sample);
++
++    // Render subtitles to overlay layer
++    render_subtitles(vo, frame);
 +
 +    return true;
 +}
@@ -276,9 +421,16 @@ index 0000000..0000001
 +    hwdec_devices_remove(vo->hwdec_devs, &p->hwctx);
 +    av_buffer_unref(&p->hwctx.av_device_ref);
 +
-+    if (p->layer) {
-+        [p->layer flushAndRemoveImage];
-+        p->layer.controlTimebase = NULL;
++    if (p->subtitle_layer) {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            [p->subtitle_layer removeFromSuperlayer];
++        });
++        p->subtitle_layer = nil;
++    }
++
++    if (p->video_layer) {
++        [p->video_layer flushAndRemoveImage];
++        p->video_layer.controlTimebase = NULL;
 +    }
 +    if (p->timebase) {
 +        CFRelease(p->timebase);
@@ -287,7 +439,7 @@ index 0000000..0000001
 +}
 +
 +const struct vo_driver video_out_avlayer = {
-+    .description = "Battery-saving output via AVSampleBufferDisplayLayer",
++    .description = "Battery-saving output with subtitle overlay",
 +    .name = "avlayer",
 +    .caps = VO_CAP_NORETAIN,
 +    .preinit = preinit,

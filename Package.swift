@@ -214,7 +214,7 @@ let package = Package(
         .binaryTarget(
             name: "Libmpv",
             url: "https://github.com/johoja12/MPVKit/releases/download/v0.41.0-avlayer/Libmpv.xcframework.zip",
-            checksum: "cd6969f73612f37c801192bfaec5afbfbed4aeaa808a6d95ddfb20cb118e3a40"
+            checksum: "a43533548687f0ecb54ff98145d0f9551cafa02ddfb63b779139d408440e0d63"
         ),
         //AUTO_GENERATE_TARGETS_END//
     ]
